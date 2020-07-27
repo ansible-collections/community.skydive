@@ -183,7 +183,7 @@ class skydive_inject_protocol(object):
                 msg="Error during topology update %s" % e, **result
             )
         finally:
-            self.stop()
+            self.stop_when_complete()
 
 
 class skydive_wsclient(skydive_client_check):
