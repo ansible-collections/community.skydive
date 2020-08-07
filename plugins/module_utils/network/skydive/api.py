@@ -37,21 +37,6 @@ from ansible.module_utils.basic import env_fallback
 try:
     from skydive.graph import Node, Edge
     from skydive.rest.client import RESTClient
-    from skydive.websocket.client import (
-        NodeAddedMsgType,
-        NodeUpdatedMsgType,
-        NodeDeletedMsgType,
-    )
-    from skydive.websocket.client import (
-        EdgeAddedMsgType,
-        EdgeUpdatedMsgType,
-        EdgeDeletedMsgType,
-    )
-    from skydive.websocket.client import (
-        WSClient,
-        WSClientDefaultProtocol,
-        WSMessage,
-    )
 
     HAS_SKYDIVE_CLIENT = True
 except ImportError:
@@ -111,139 +96,24 @@ class skydive_client_check(object):
                     kwargs[key] = os.environ.get(env)
 
 
-class skydive_inject_protocol(object):
-    """ Implements inject protocol for node and edge modules """
+class skydive_restclient(skydive_client_check):
+    """ Base class for implementing Skydive Rest API """
 
-    def onOpen(self):
-        module = self.factory.kwargs["module"]
-        params = self.factory.kwargs["params"]
-        result = self.factory.kwargs["result"]
-        if "node1" and "node2" in self.factory.kwargs:
-            node1 = self.factory.kwargs["node1"]
-            node2 = self.factory.kwargs["node2"]
-
-        if module.check_mode:
-            self.stop()
-            return
-        try:
-            host = params["host"]
-            if params["metadata"]:
-                metadata = module._check_type_dict(params["metadata"])
-            else:
-                metadata = {}
-            if "node_type" in params:
-                metadata["Name"] = params["name"]
-                metadata["Type"] = params["node_type"]
-                seed = params["seed"]
-                if not seed:
-                    seed = "%s:%s" % (params["name"], params["node_type"])
-                if (
-                    module.params["state"] == "present"
-                    or module.params["state"] == "update"
-                ):
-                    uid = str(uuid.uuid5(uuid.NAMESPACE_OID, seed))
-                    node = Node(uid, host, metadata=metadata)
-                    if module.params["state"] == "present":
-                        msg = WSMessage("Graph", NodeAddedMsgType, node)
-                    else:
-                        msg = WSMessage("Graph", NodeUpdatedMsgType, node)
-                else:
-                    uid = params["id"]
-                    node = Node(uid, host, metadata=metadata)
-                    msg = WSMessage("Graph", NodeDeletedMsgType, node)
-            elif "relation_type" in params:
-                metadata["RelationType"] = params["relation_type"]
-                if (
-                    module.params["state"] == "present"
-                    or module.params["state"] == "update"
-                ):
-                    uid = str(
-                        uuid.uuid5(
-                            uuid.NAMESPACE_OID,
-                            "%s:%s:%s"
-                            % (node1, node2, params["relation_type"]),
-                        )
-                    )
-                    edge = Edge(uid, host, node1, node2, metadata=metadata)
-                    if module.params["state"] == "present":
-                        msg = WSMessage("Graph", EdgeAddedMsgType, edge)
-                    else:
-                        msg = WSMessage("Graph", EdgeUpdatedMsgType, edge)
-                else:
-                    uid = module.params["id"]
-                    edge = Edge(uid, host, node1, node2, metadata=metadata)
-                    msg = WSMessage("Graph", EdgeDeletedMsgType, edge)
-
-            self.sendWSMessage(msg)
-            if uid:
-                result["UUID"] = uid
-            result["changed"] = True
-        except Exception as e:
-            module.fail_json(
-                msg="Error during topology update %s" % e, **result
-            )
-        finally:
-            self.stop()
-
-
-class skydive_wsclient(skydive_client_check):
-    """ Base class for implementing Skydive Websocket API """
-
-    def __init__(self, module, **kwargs):
-        super(skydive_wsclient, self).__init__(**kwargs)
-
-        class skydive_full_inject_protocol(
-            skydive_inject_protocol, WSClientDefaultProtocol
-        ):
-            pass
-
-        kwargs["scheme"] = "ws"
+    def __init__(self, **kwargs):
+        super(skydive_restclient, self).__init__(**kwargs)
+        kwargs["scheme"] = "http"
         if "ssl" in kwargs:
             if kwargs["ssl"]:
-                kwargs["scheme"] = "wss"
+                kwargs["scheme"] = "https"
         if "insecure" not in kwargs:
             kwargs["insecure"] = False
-        scheme = kwargs["scheme"]
-        self.result = dict(changed=False)
-        if "node_type" in module.params:
-            self.wsclient_object = WSClient(
-                "ansible-" + str(os.getpid()) + "-" + module.params["host"],
-                "%s://%s/ws/publisher" % (scheme, kwargs["endpoint"]),
-                protocol=type(
-                    "skydive_full_inject_protocol",
-                    (skydive_inject_protocol, WSClientDefaultProtocol),
-                    dict(),
-                ),
-                persistent=True,
-                insecure=kwargs["insecure"],
-                username=kwargs["username"],
-                password=kwargs["password"],
-                module=module,
-                params=module.params,
-                result=self.result,
-            )
-        elif "relation_type" in module.params:
-            self.parent_node = self.get_node_id(module.params["parent_node"])
-            self.child_node = self.get_node_id(module.params["child_node"])
-
-            self.wsclient_object = WSClient(
-                "ansible-" + str(os.getpid()) + "-" + module.params["host"],
-                "%s://%s/ws/publisher" % (scheme, kwargs["endpoint"]),
-                protocol=type(
-                    "skydive_full_inject_protocol",
-                    (skydive_inject_protocol, WSClientDefaultProtocol),
-                    dict(),
-                ),
-                persistent=True,
-                insecure=kwargs["insecure"],
-                username=kwargs["username"],
-                password=kwargs["password"],
-                module=module,
-                params=module.params,
-                node1=self.parent_node,
-                node2=self.child_node,
-                result=self.result,
-            )
+        self.restclient_object = RESTClient(
+            kwargs["endpoint"],
+            scheme=kwargs["scheme"],
+            insecure=kwargs["insecure"],
+            username=kwargs["username"],
+            password=kwargs["password"],
+        )
 
     def get_node_id(self, node_selector):
         """ Checks if Gremlin expresssion is passed as input to get the nodes UUID """
@@ -263,26 +133,6 @@ class skydive_wsclient(skydive_client_check):
                 )
             return str(nodes[0].id)
         return node_selector
-
-
-class skydive_restclient(skydive_client_check):
-    """ Base class for implementing Skydive Rest API """
-
-    def __init__(self, **kwargs):
-        super(skydive_restclient, self).__init__(**kwargs)
-        kwargs["scheme"] = "http"
-        if "ssl" in kwargs:
-            if kwargs["ssl"]:
-                kwargs["scheme"] = "https"
-        if "insecure" not in kwargs:
-            kwargs["insecure"] = False
-        self.restclient_object = RESTClient(
-            kwargs["endpoint"],
-            scheme=kwargs["scheme"],
-            insecure=kwargs["insecure"],
-            username=kwargs["username"],
-            password=kwargs["password"],
-        )
 
 
 class skydive_lookup(skydive_restclient):
@@ -388,78 +238,164 @@ class skydive_flow_capture(skydive_restclient):
         return result
 
 
-class skydive_node(skydive_wsclient, skydive_restclient):
+class skydive_node(skydive_restclient):
     """ Implements Skydive Node modules """
 
     def __init__(self, module):
         self.module = module
         provider = module.params["provider"]
-        super(skydive_node, self).__init__(self.module, **provider)
+        super(skydive_node, self).__init__(**provider)
 
     def run(self):
+        result = {"changed": False}
+
         try:
-            lookup_query = (
+            node = None
+
+            node_query = (
                 SKYDIVE_GREMLIN_QUERY
                 + "('Name', '{0}', 'Type', '{1}')".format(
                     self.module.params["name"], self.module.params["node_type"]
                 )
             )
-            node_exists = self.restclient_object.lookup_nodes(lookup_query)
 
-            if not node_exists and self.module.params["state"] == "present":
-                self.wsclient_object.connect()
-                self.wsclient_object.start()
-            elif (
-                len(node_exists) > 0
-                and self.module.params["state"] == "update"
-            ):
-                self.wsclient_object.connect()
-                self.wsclient_object.start()
-            elif (
-                len(node_exists) > 0
-                and self.module.params["state"] == "absent"
-            ):
-                self.module.params["id"] = node_exists[0].__dict__["id"]
-                self.wsclient_object.connect()
-                self.wsclient_object.start()
+            # Get the matching node
+            query_result = self.restclient_object.lookup_nodes(node_query)
+            if query_result:
+                node = query_result[0]
+
+            if not node and self.module.params["state"] == "present":
+                # Create node
+                seed = self.module.params["seed"]
+                if not seed:
+                    seed = "%s:%s" % (self.module.params["name"], self.module.params["node_type"])
+
+                node_id = str(uuid.uuid5(uuid.NAMESPACE_OID, seed))
+
+                metadata = self.module._check_type_dict(self.module.params["metadata"])
+                metadata["Name"] = self.module.params["name"]
+                metadata["Type"] = self.module.params["node_type"]
+
+                result = self.restclient_object.node_create(
+                            node_id=node_id,
+                            host=self.module.params["host"],
+                            metadata=metadata,
+                         ).repr_json()
+
+                result["changed"] = True
+
+            elif node and self.module.params["state"] == "present":
+                # Update existing node
+                # Check if defined metadata is equal to the existing node
+                metadata = self.module._check_type_dict(self.module.params["metadata"])
+
+                if "TID" in metadata or "Type" in metadata or "Name" in metadata:
+                    self.module.fail_json(msg="Metadata values 'TID', 'Type' and 'Name' could not be changed")
+
+                # Create a JSON patch for each of the keys defined, if it is different from the one already stored
+                patches = []
+                for key, value in iteritems(metadata):
+                    if value != node.metadata.get(key):
+                        patches.append({
+                            "path": "/Metadata/{}".format(key),
+                            "value": value,
+                            "op": "replace" if key in node.metadata else "add",
+                        })
+
+                # Only execute patching if we have something to modify
+                if patches:
+                    result = self.restclient_object.node_update(node_id=node.id, patches=patches).repr_json()
+                    result["changed"] = True
+
+            elif node and self.module.params["state"] == "absent":
+                # Delete node
+                result["response"] = self.restclient_object.node_delete(node.id)
+                result["changed"] = True
+
         except Exception as e:
             self.module.fail_json(msg=to_text(e))
-        return self.result
+
+        return result
 
 
-class skydive_edge(skydive_wsclient, skydive_restclient):
+class skydive_edge(skydive_restclient):
     """ Implements Skydive Edge modules """
 
     def __init__(self, module):
         self.module = module
         provider = module.params["provider"]
-
-        super(skydive_edge, self).__init__(self.module, **provider)
+        super(skydive_edge, self).__init__(**provider)
 
     def run(self):
+        result = {"changed": False}
+
         try:
-            edge_exists = False
+            edge = None
+
+            parent_node_id = self.get_node_id(self.module.params["parent_node"])
+            child_node_id = self.get_node_id(self.module.params["child_node"])
+
             edge_query = (
                 SKYDIVE_GREMLIN_EDGE_QUERY
-                + "('Parent', '{0}', 'Child', '{1}')".format(
-                    self.parent_node, self.child_node
-                )
+                + "('Parent', '{0}', 'Child', '{1}')".format(parent_node_id, child_node_id)
             )
+
+            # Get the first edge between the nodes specified
             query_result = self.restclient_object.lookup_edges(edge_query)
             if query_result:
-                query_result = query_result[0].__dict__
-                edge_exists = True
+                edge = query_result[0]
 
-            if not edge_exists and self.module.params["state"] == "present":
-                self.wsclient_object.connect()
-                self.wsclient_object.start()
-            elif edge_exists and self.module.params["state"] == "update":
-                self.wsclient_object.connect()
-                self.wsclient_object.start()
-            elif edge_exists and self.module.params["state"] == "absent":
-                self.module.params["id"] = query_result["id"]
-                self.wsclient_object.connect()
-                self.wsclient_object.start()
+            if not edge and self.module.params["state"] == "present":
+                # Create edge
+                seed = self.module.params["seed"]
+                if not seed:
+                    seed = "%s:%s:%s" % (
+                               self.module.params["parent_node"],
+                               self.module.params["child_node"],
+                               self.module.params["relation_type"],
+                           )
+
+                edge_id = str(uuid.uuid5(uuid.NAMESPACE_OID, seed))
+
+                metadata = self.module._check_type_dict(self.module.params["metadata"])
+                metadata["RelationType"] = self.module.params["relation_type"]
+
+                result = self.restclient_object.edge_create(
+                            parent_node_id,
+                            child_node_id,
+                            edge_id=edge_id,
+                            host=self.module.params["host"],
+                            metadata=metadata,
+                         ).repr_json()
+
+                result["changed"] = True
+
+            elif edge and self.module.params["state"] == "present":
+                # Update first edge found between nodes
+                metadata = self.module._check_type_dict(self.module.params["metadata"])
+                metadata["RelationType"] = self.module.params["relation_type"]
+
+                # Create a JSON patch for each of the keys defined, if it is different from the one already stored
+                patches = []
+                for key, value in iteritems(metadata):
+                    if value != edge.metadata.get(key):
+                        patches.append({
+                            "path": "/Metadata/{}".format(key),
+                            "value": value,
+                            "op": "replace" if key in edge.metadata else "add",
+                        })
+
+                # Only execute patching if we have something to modify
+                if patches:
+                    result = self.restclient_object.edge_update(edge_id=edge.id, patches=patches).repr_json()
+                    result["changed"] = True
+
+            elif edge and self.module.params["state"] == "absent":
+                # Delete edge
+                result["response"] = self.restclient_object.edge_delete(edge.id)
+                result["changed"] = True
+
         except Exception as e:
             self.module.fail_json(msg=to_text(e))
-        return self.result
+
+        return result

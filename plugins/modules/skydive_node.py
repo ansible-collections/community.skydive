@@ -48,12 +48,11 @@ options:
     required: false
   state:
     description:
-    - State of the Skydive Node. If value is I(present) new node will be created else
-      if it is I(absent) it will be deleted.
+    - State of the Skydive Node. If value is I(present) new node will be created, or
+      metadata modified if it is different. If it is I(absent) node will be deleted.
     default: present
     choices:
     - present
-    - update
     - absent
 """
 
@@ -78,7 +77,7 @@ EXAMPLES = """
     seed: TOR1
     metadata:
       Model: Cisco 3400
-    state: update
+    state: present
     provider:
       endpoint: localhost:8082
       username: admin
@@ -119,7 +118,7 @@ def main():
 
     argument_spec = dict(
         provider=dict(required=False),
-        state=dict(default="present", choices=["present", "update", "absent"]),
+        state=dict(default="present", choices=["present", "absent"]),
     )
 
     argument_spec.update(ib_spec)
