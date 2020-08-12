@@ -45,6 +45,10 @@ options:
     - To define the host of the node.
     default: ''
     required: false
+  seed:
+    description:
+    - used to generate the UUID of the node
+    default: ''
   metadata:
     description:
     - To define metadata for the edge.
@@ -178,6 +182,7 @@ def main():
         parent_node=dict(type="str", required=True),
         child_node=dict(type="str", required=True),
         host=dict(type="str", default=""),
+        seed=dict(required=False, ib_req=True, default=""),
         metadata=dict(type="dict", default=dict()),
     )
 
